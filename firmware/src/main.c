@@ -9,6 +9,53 @@
 #define TASK_OLED_STACK_SIZE                (1024*6/sizeof(portSTACK_TYPE))
 #define TASK_OLED_STACK_PRIORITY            (tskIDLE_PRIORITY)
 
+#define TASK_AFEC_STACK_SIZE                (1024*6/sizeof(portSTACK_TYPE))
+#define TASK_AFEC_STACK_PRIORITY            (tskIDLE_PRIORITY)
+
+/** Queue for msg log send data */
+QueueHandle_t xQueueAFEC;
+
+//Queue for RGB info
+QueueHandle_t xQueueRGB;
+
+typedef struct {
+	uint value;
+} adcData;
+
+typedef struct {
+	uint r;
+	uint g;
+	uint b;
+} rgbRGB;
+
+
+
+//semaphore
+SemaphoreHandle_t xSemaphore;
+
+//PWM
+//R
+#define PIO_PWM_0_R PIOD
+#define ID_PIO_PWM_0_R ID_PIOD
+#define MASK_PIN_PWM_0_R (1 << 11)
+
+//G
+#define PIO_PWM_0_G PIOA
+#define ID_PIO_PWM_0_G ID_PIOA
+#define MASK_PIN_PWM_0_G (1 << 2)
+
+//B
+#define PIO_PWM_0_B PIOC
+#define ID_PIO_PWM_0_B ID_PIOC
+#define MASK_PIN_PWM_0_B (1 << 19)
+
+
+//AFEC
+#define AFEC_POT AFEC0
+#define AFEC_POT_ID ID_AFEC0
+#define AFEC_POT_CHANNEL 0 // Canal do pino PD30
+
+
 extern void vApplicationStackOverflowHook(xTaskHandle *pxTask,  signed char *pcTaskName);
 extern void vApplicationIdleHook(void);
 extern void vApplicationTickHook(void);
@@ -41,23 +88,145 @@ extern void vApplicationMallocFailedHook(void) {
 /* handlers / callbacks                                                 */
 /************************************************************************/
 
+void RTT_Handler(void) {
+	
+	uint32_t ul_status;
+	ul_status = rtt_get_status(RTT);
+
+
+	/* IRQ due to Alarm */
+	if ((ul_status & RTT_SR_ALMS) == RTT_SR_ALMS) {
+		//xSemaphoreGiveFromISR(xSemaphore, 0);
+		/* Selecina canal e inicializa conversão */
+		afec_channel_enable(AFEC_POT, AFEC_POT_CHANNEL);
+		afec_start_software_conversion(AFEC_POT);
+	}
+}
+
+static void AFEC_pot_Callback(void){
+	adcData adc;
+	adc.value = afec_channel_get_value(AFEC_POT, AFEC_POT_CHANNEL);
+	BaseType_t xHigherPriorityTaskWoken = pdTRUE;
+	xQueueSendFromISR(xQueueAFEC, &adc, &xHigherPriorityTaskWoken);
+}
+
+
 /************************************************************************/
 /* TASKS                                                                */
 /************************************************************************/
 
 static void task_led(void *pvParameters) {
+	  
+	//configurando o PWM da perna R
+	/* Configura o pino do PIO para ser controlado pelo PWM */
+	/* MUITO IMPORTANTE AJUSTAR ESSE CÓDIGO DE ACORDO COM O CANAL E PINO USADO */
+	pmc_enable_periph_clk(ID_PIO_PWM_0_R);
+	pio_set_peripheral(PIO_PWM_0_R, PIO_PERIPH_B, MASK_PIN_PWM_0_R);
+	/* inicializa PWM com duty cycle 23*/
+	/* MUITO IMPORTANTE CRIAR UM pwm_channel_t POR CANAL */
+	static pwm_channel_t pwm_channel_pin;
+	PWM_init(PWM0, ID_PWM0,  &pwm_channel_pin, PWM_CHANNEL_0, 0);
+	
+	//configurando o PWM da perna G
+	/* Configura o pino do PIO para ser controlado pelo PWM */
+	/* MUITO IMPORTANTE AJUSTAR ESSE CÓDIGO DE ACORDO COM O CANAL E PINO USADO */
+	pmc_enable_periph_clk(ID_PIO_PWM_0_G);
+	pio_set_peripheral(PIO_PWM_0_G, PIO_PERIPH_A, MASK_PIN_PWM_0_G);
+	/* inicializa PWM com duty cycle 23*/
+	/* MUITO IMPORTANTE CRIAR UM pwm_channel_t POR CANAL */
+	static pwm_channel_t pwm_channel_pa2;
+	PWM_init(PWM0, ID_PWM0,  &pwm_channel_pa2, PWM_CHANNEL_1, 0);
+	
+		//configurando o PWM da perna B
+	/* Configura o pino do PIO para ser controlado pelo PWM */
+	/* MUITO IMPORTANTE AJUSTAR ESSE CÓDIGO DE ACORDO COM O CANAL E PINO USADO */
+	pmc_enable_periph_clk(ID_PIO_PWM_0_B);
+	pio_set_peripheral(PIO_PWM_0_B, PIO_PERIPH_B, MASK_PIN_PWM_0_B);
+	/* inicializa PWM com duty cycle 23*/
+	/* MUITO IMPORTANTE CRIAR UM pwm_channel_t POR CANAL */
+	static pwm_channel_t pwm_channel_pa13;
+	PWM_init(PWM0, ID_PWM0,  &pwm_channel_pa13, PWM_CHANNEL_2, 0);
+	
+	rgbRGB rgb;
 
 	while (1) {
+		
+		
+		if (xQueueReceive( xQueueRGB, &rgb, ( TickType_t ) 200 )){
+			
+			/* atualiza pwM_R*/
+			pwm_channel_update_duty(PWM0, &pwm_channel_pin, rgb.r);
+								
+			/* atualiza pwm_G*/
+			pwm_channel_update_duty(PWM0, &pwm_channel_pa2, rgb.g);
+								
+			/* atualiza pwm_B*/
+			pwm_channel_update_duty(PWM0, &pwm_channel_pa13, rgb.b);
+			
+
+		}
 
 	}
 }
+
+static void task_afec(void *pvParameters){
+	// configura ADC e TC para controlar a leitura
+	config_AFEC_pot(AFEC_POT, AFEC_POT_ID, AFEC_POT_CHANNEL, AFEC_pot_Callback);
+	adcData adc;
+	rgbRGB rgb;
+	
+	int r;
+	int g;
+	int b;
+	
+	int *p_r = &r;
+	int *p_g = &g;
+	int *p_b = &b;
+	
+	for (;;) {
+		
+		RTT_init(100, 10, RTT_MR_ALMIEN);
+		
+		if (xQueueReceive(xQueueAFEC, &(adc), 200)) {
+			//printf("ADC: %d \n", adc);
+			wheel(adc.value, p_r, p_g, p_b);
+			printf("R: %d \n", r);
+			printf("G: %d \n", g);
+			printf("B: %d \n", b);
+			rgb.r = r;
+			rgb.g = g;
+			rgb.b = b;
+			
+			xQueueSend(xQueueRGB, &rgb, 0);
+			}
+		}
+	}
 
 /************************************************************************/
 /* funcoes                                                              */
 /************************************************************************/
 
 void wheel( uint WheelPos, uint *r, uint *g, uint *b ) {
-
+	
+	//convertendo para 0 - 255
+	WheelPos = WheelPos * (0.063);
+	
+	if ( WheelPos < 85 ) {
+		*r = 255 - WheelPos * 3;
+		*g = 0; 
+		*b = WheelPos * 3;
+	}else if( WheelPos < 170 ) {
+		WheelPos -= 85;
+		*r = 0;
+		*g =  WheelPos * 3;
+		*b = 255 - WheelPos * 3;
+	}else {
+		WheelPos -= 170;
+		*r = WheelPos * 3;
+		*g = 255 - WheelPos * 3;
+		*b =  0;
+	}
+	
 }
 
 static void config_AFEC_pot(Afec *afec, uint32_t afec_id, uint32_t afec_channel,
@@ -196,13 +365,38 @@ int main(void) {
 
 	/* Initialize the console uart */
 	configure_console();
+	
+	//criando a fila do AFEC
+	xQueueAFEC = xQueueCreate(100, sizeof(adcData));
+	if (xQueueAFEC == NULL)
+	printf("falha em criar a queue xQueueADC \n");
+	
+	xQueueRGB = xQueueCreate(100, sizeof(rgbRGB));
+	if (xQueueRGB == NULL)
+	printf("falha em criar a queue xQueueADC \n");
+	
+	
+	//semaphore
+	// cria semáforo binário
+	xSemaphore = xSemaphoreCreateBinary();
 
+	// verifica se semáforo foi criado corretamente
+	if (xSemaphore == NULL)
+	printf("falha em criar o semaforo \n");
+	
+	
+	
 	/* Create task to control oled */
 	if (xTaskCreate(task_led, "led", TASK_OLED_STACK_SIZE, NULL,
 	TASK_OLED_STACK_PRIORITY, NULL) != pdPASS) {
 		printf("Failed to create task_led\r\n");
 	}
-
+	
+	/* Create task AFEC */
+	if (xTaskCreate(task_afec, "afec", TASK_AFEC_STACK_SIZE, NULL,
+	TASK_AFEC_STACK_PRIORITY, NULL) != pdPASS) {
+		printf("Failed to create task_afec \r\n");
+	}
 	/* Start the scheduler. */
 	vTaskStartScheduler();
 
