@@ -100,6 +100,8 @@ void RTT_Handler(void) {
 		/* Selecina canal e inicializa conversão */
 		afec_channel_enable(AFEC_POT, AFEC_POT_CHANNEL);
 		afec_start_software_conversion(AFEC_POT);
+		RTT_init(100, 10, RTT_MR_ALMIEN);
+
 	}
 }
 
@@ -185,7 +187,6 @@ static void task_afec(void *pvParameters){
 	
 	for (;;) {
 		
-		RTT_init(100, 10, RTT_MR_ALMIEN);
 		
 		if (xQueueReceive(xQueueAFEC, &(adc), 200)) {
 			//printf("ADC: %d \n", adc);
